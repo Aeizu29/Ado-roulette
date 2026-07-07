@@ -653,6 +653,9 @@
     let pendingBgIndex = null;
     let pendingBgLayer = null;
     let activeSongIndex = null;
+    let lastMainObservedTime = 0;
+    let lastMainObservedAt = 0;
+    let lastManualSeekSyncAt = 0;
     let apiReady = false;
     let currentRotation = 0;
     let fastSpinMode = false;
@@ -900,6 +903,10 @@
     }
 
     function loadSelectedPlaylistIndex(targetPlayer, index) {
+      lastMainObservedTime = 0;
+      lastMainObservedAt = 0;
+      lastManualSeekSyncAt = 0;
+
       try {
         targetPlayer.loadPlaylist({
           listType: "playlist",
@@ -976,6 +983,7 @@
 
             // 2 = paused
             if (event.data === 2) {
+              syncBackgroundToMain(true);
               pauseBackground();
             }
 
@@ -1306,13 +1314,58 @@
     requestAnimationFrame(animatePlush);
 
 
+
+    function detectManualSeekAndSync() {
+      if (!player || !getActiveBgPlayer()) return;
+      if (!player.getCurrentTime || !player.getPlayerState) return;
+
+      try {
+        const state = player.getPlayerState();
+        const now = performance.now();
+        const mainTime = player.getCurrentTime();
+
+        if (!lastMainObservedAt) {
+          lastMainObservedAt = now;
+          lastMainObservedTime = mainTime;
+          return;
+        }
+
+        const elapsed = Math.max(0.001, (now - lastMainObservedAt) / 1000);
+        const expectedTime = lastMainObservedTime + (state === 1 ? elapsed : 0);
+        const jump = Math.abs(mainTime - expectedTime);
+
+        // If the user drags the YouTube timeline, the time jumps suddenly.
+        // Force the background to the same timestamp without disabling normal resync.
+        if (jump > 1.6 && now - lastManualSeekSyncAt > 260) {
+          lastManualSeekSyncAt = now;
+          syncBackgroundToMain(true);
+
+          // If the main player is paused after seeking, keep the background paused too.
+          if (state !== 1) {
+            setTimeout(() => {
+              try {
+                const bg = getActiveBgPlayer();
+                if (bg && bg.seekTo) bg.seekTo(player.getCurrentTime(), true);
+                if (bg && bg.pauseVideo) bg.pauseVideo();
+              } catch (e) {}
+            }, 120);
+          }
+        }
+
+        lastMainObservedAt = now;
+        lastMainObservedTime = mainTime;
+      } catch (e) {}
+    }
+
     setInterval(() => {
       try {
+        detectManualSeekAndSync();
+
         if (player && getActiveBgPlayer() && player.getPlayerState && player.getPlayerState() === 1) {
           syncBackgroundToMain(false);
         }
       } catch (e) {}
-    }, 500);
+    }, 350);
 
     const tag = document.createElement("script");
     tag.src = "https://www.youtube.com/iframe_api";
